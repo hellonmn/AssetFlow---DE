@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+airflow-logs/
+data/processed/
+data/raw/*.csv
+!data/raw/.gitkeep
+*.egg-info/
+

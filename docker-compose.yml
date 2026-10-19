@@ -1,0 +1,108 @@
+name: assetflow-data-engineering
+
+x-airflow-common: &airflow-common
+  build: .
+  environment: &airflow-environment
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+    AIRFLOW__WEBSERVER__SECRET_KEY: local-development-secret
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    PYTHONPATH: /opt/airflow
+    S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
+    S3_BUCKET: ${S3_BUCKET:-assetflow-data}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-assetflow}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-assetflow123}
+    AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+    POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+    POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+    POSTGRES_DB: ${POSTGRES_DB:-assetflow_analytics}
+    POSTGRES_USER: ${POSTGRES_USER:-assetflow}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-assetflow}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./data:/opt/airflow/data
+    - airflow-logs:/opt/airflow/logs
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+    minio-init:
+      condition: service_completed_successfully
+
+services:
+  airflow-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-assetflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-assetflow}
+      POSTGRES_DB: ${POSTGRES_DB:-assetflow_analytics}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-assetflow} -d ${POSTGRES_DB:-assetflow_analytics}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-assetflow}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-assetflow123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    depends_on:
+      - minio
+    entrypoint: /bin/sh
+    command: -c "until mc alias set local http://minio:9000 '$$MINIO_ROOT_USER' '$$MINIO_ROOT_PASSWORD'; do sleep 2; done; mc mb --ignore-existing local/$${S3_BUCKET:-assetflow-data}"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-assetflow}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-assetflow123}
+      S3_BUCKET: ${S3_BUCKET:-assetflow-data}
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command: -c "airflow db migrate && airflow users create --username admin --password admin --firstname Asset --lastname Flow --role Admin --email admin@example.com || true"
+    restart: "no"
+
+  airflow:
+    <<: *airflow-common
+    command: standalone
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  airflow-db-data:
+  postgres-data:
+  minio-data:
+  airflow-logs:
+
